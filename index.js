@@ -1,101 +1,101 @@
-
 require("dotenv").config();
-const { 
-  Client, 
-  GatewayIntentBits, 
-  EmbedBuilder,
-  SlashCommandBuilder,
-  Routes,
-  REST 
-} = require("discord.js");
-const mongoose = require("mongoose");
+const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const fs = require("fs");
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+  intents: [GatewayIntentBits.Guilds]
 });
 
-// Mongo Schema
-const announcementSchema = new mongoose.Schema({
-  channelId: String,
-  title: String,
-  description: String,
-  color: String,
-  mention: String,
-  sendAt: Date
-});
 
-const Announcement = mongoose.model("Announcement", announcementSchema);
+// ===== JSON DATABASE FUNCTIONS =====
 
-client.once("ready", async () => {
+function loadAnnouncements() {
+  return JSON.parse(fs.readFileSync("./announcements.json", "utf8"));
+}
+
+function saveAnnouncements(data) {
+  fs.writeFileSync("./announcements.json", JSON.stringify(data, null, 2));
+}
+
+
+// ===== SCHEDULER =====
+
+function scheduleAnnouncement(data) {
+  const delay = new Date(data.sendAt) - new Date();
+
+  if (delay <= 0) return;
+
+  setTimeout(async () => {
+    try {
+      const channel = await client.channels.fetch(data.channelId);
+
+      const embed = new EmbedBuilder()
+        .setTitle(data.title)
+        .setDescription(data.description)
+        .setColor(data.color || "Blue")
+        .setTimestamp();
+
+      await channel.send({
+        content: data.mention || "",
+        embeds: [embed]
+      });
+
+      // Remove after sending
+      const announcements = loadAnnouncements();
+      const filtered = announcements.filter(a => a.id !== data.id);
+      saveAnnouncements(filtered);
+
+      console.log("Announcement Sent:", data.title);
+
+    } catch (err) {
+      console.log("Error sending announcement:", err);
+    }
+  }, delay);
+}
+
+
+// ===== BOT READY =====
+
+client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // Check pending timers
-  const pending = await Announcement.find();
+  const pending = loadAnnouncements();
   pending.forEach(a => scheduleAnnouncement(a));
 });
+
+
+// ===== SLASH COMMAND =====
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "announce") {
+
     const title = interaction.options.getString("title");
     const description = interaction.options.getString("description");
-    const channel = interaction.options.getChannel("channel");
-    const color = interaction.options.getString("color") || "#2F3136";
-    const mention = interaction.options.getString("mention");
-    const time = interaction.options.getInteger("time");
+    const minutes = interaction.options.getInteger("minutes");
+    const mention = interaction.options.getString("mention") || "";
 
-    const sendTime = new Date(Date.now() + time * 60000);
+    const sendTime = new Date(Date.now() + minutes * 60000);
 
-    const newAnnouncement = await Announcement.create({
-      channelId: channel.id,
+    const data = {
+      id: Date.now().toString(),
+      channelId: interaction.channel.id,
       title,
       description,
-      color,
+      color: "Blue",
       mention,
       sendAt: sendTime
-    });
+    };
 
-    scheduleAnnouncement(newAnnouncement);
+    const announcements = loadAnnouncements();
+    announcements.push(data);
+    saveAnnouncements(announcements);
 
-    await interaction.reply({
-      content: `✅ Announcement scheduled for ${sendTime.toLocaleString()}`,
-      ephemeral: true
-    });
+    scheduleAnnouncement(data);
+
+    await interaction.reply(`✅ Announcement scheduled in ${minutes} minute(s)!`);
   }
 });
 
-function scheduleAnnouncement(data) {
-  const delay = data.sendAt - Date.now();
-  if (delay <= 0) return;
-
-  setTimeout(async () => {
-    const channel = await client.channels.fetch(data.channelId);
-
-    const embed = new EmbedBuilder()
-      .setTitle(data.title)
-      .setDescription(data.description)
-      .setColor(data.color)
-      .setTimestamp();
-
-    let mentionText = "";
-    if (data.mention === "everyone") mentionText = "@everyone";
-    if (data.mention === "here") mentionText = "@here";
-
-    await channel.send({
-      content: mentionText,
-      embeds: [embed]
-    });
-
-    await Announcement.deleteOne({ _id: data._id });
-
-  }, delay);
-}
-
-mongoose.connect(process.env.MONGO_URI).then(() => {
-  client.login(process.env.TOKEN);
-});
+client.login(process.env.TOKEN);
